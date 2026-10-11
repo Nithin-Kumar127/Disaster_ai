@@ -99,7 +99,7 @@ class SiameseUNet(nn.Module):
 # ==========================================
 # 2. STREAMLIT UI & INFERENCE PIPELINE
 # ==========================================
-st.set_page_config(page_title="AI Disaster Assessment", layout="wide")
+st.set_page_config(page_title="AI Disaster Assessment v1.0", layout="wide")
 st.title("🛰️ AI Satellite Disaster Damage Assessment v1.0")
 st.write(
     "Upload pre- and post-disaster satellite imagery to generate automated damage overlays."
