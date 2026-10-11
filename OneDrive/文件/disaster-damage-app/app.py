@@ -8,15 +8,20 @@ import numpy as np
 from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
 
+
 # ==========================================
 # 1. MODEL DEFINITION (Siamese U-Net)
 # ==========================================
 class DecoderBlock(nn.Module):
     def __init__(self, in_channels, skip_channels, out_channels):
         super().__init__()
-        self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, kernel_size=2, stride=2)
+        self.up = nn.ConvTranspose2d(
+            in_channels, in_channels // 2, kernel_size=2, stride=2
+        )
         self.conv = nn.Sequential(
-            nn.Conv2d(in_channels // 2 + skip_channels, out_channels, kernel_size=3, padding=1),
+            nn.Conv2d(
+                in_channels // 2 + skip_channels, out_channels, kernel_size=3, padding=1
+            ),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
@@ -27,9 +32,12 @@ class DecoderBlock(nn.Module):
     def forward(self, x, skip):
         x = self.up(x)
         if x.shape != skip.shape:
-            x = F.interpolate(x, size=skip.shape[2:], mode="bilinear", align_corners=False)
+            x = F.interpolate(
+                x, size=skip.shape[2:], mode="bilinear", align_corners=False
+            )
         x = torch.cat([x, skip], dim=1)
         return self.conv(x)
+
 
 class SiameseUNet(nn.Module):
     def __init__(self, num_classes=5):
@@ -45,7 +53,7 @@ class SiameseUNet(nn.Module):
         self.bridge = nn.Sequential(
             nn.Conv2d(2048 * 2, 1024, kernel_size=3, padding=1),
             nn.BatchNorm2d(1024),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
         self.decoder4 = DecoderBlock(1024, 1024 * 2, 512)
@@ -57,7 +65,7 @@ class SiameseUNet(nn.Module):
             nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, num_classes, kernel_size=1)
+            nn.Conv2d(32, num_classes, kernel_size=1),
         )
 
     def forward(self, pre, post):
@@ -82,30 +90,43 @@ class SiameseUNet(nn.Module):
 
         out = self.final_upsample(x)
         if out.shape[2:] != input_size:
-            out = F.interpolate(out, size=input_size, mode="bilinear", align_corners=False)
+            out = F.interpolate(
+                out, size=input_size, mode="bilinear", align_corners=False
+            )
         return out
+
 
 # ==========================================
 # 2. STREAMLIT UI & INFERENCE PIPELINE
 # ==========================================
 st.set_page_config(page_title="AI Disaster Assessment", layout="wide")
 st.title("🛰️ AI Satellite Disaster Damage Assessment v1.0")
-st.write("Upload pre- and post-disaster satellite imagery to generate automated damage overlays.")
+st.write(
+    "Upload pre- and post-disaster satellite imagery to generate automated damage overlays."
+)
+
 
 @st.cache_resource
 def load_model():
     model = SiameseUNet(num_classes=5)
-    model.load_state_dict(torch.load("best_siamese_unet_xbd.pth", map_location=torch.device("cpu")))
+    model.load_state_dict(
+        torch.load("best_siamese_unet_xbd.pth", map_location=torch.device("cpu"))
+    )
     model.eval()
     return model
+
 
 model = load_model()
 
 col1, col2 = st.columns(2)
 with col1:
-    pre_file = st.file_uploader("Upload Pre-Disaster Image", type=["png", "jpg", "jpeg"])
+    pre_file = st.file_uploader(
+        "Upload Pre-Disaster Image", type=["png", "jpg", "jpeg"]
+    )
 with col2:
-    post_file = st.file_uploader("Upload Post-Disaster Image", type=["png", "jpg", "jpeg"])
+    post_file = st.file_uploader(
+        "Upload Post-Disaster Image", type=["png", "jpg", "jpeg"]
+    )
 
 if pre_file and post_file:
     pre_bytes = np.frombuffer(pre_file.read(), np.uint8)
@@ -124,27 +145,42 @@ if pre_file and post_file:
             post_resized = cv2.resize(post_img, (256, 256))
 
             pre_tensor = torch.from_numpy(pre_resized).permute(2, 0, 1).float() / 255.0
-            post_tensor = torch.from_numpy(post_resized).permute(2, 0, 1).float() / 255.0
+            post_tensor = (
+                torch.from_numpy(post_resized).permute(2, 0, 1).float() / 255.0
+            )
 
             with torch.no_grad():
                 output = model(pre_tensor.unsqueeze(0), post_tensor.unsqueeze(0))
                 pred_mask_256 = torch.argmax(output, dim=1).squeeze(0).numpy()
 
-            pred_mask = cv2.resize(pred_mask_256.astype(np.uint8), (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+            pred_mask = cv2.resize(
+                pred_mask_256.astype(np.uint8),
+                (orig_w, orig_h),
+                interpolation=cv2.INTER_NEAREST,
+            )
 
-            COLOR_PALETTE = np.array([
-                [0, 0, 0],       # 0: Background
-                [0, 255, 0],     # 1: No Damage
-                [255, 255, 0],   # 2: Minor Damage
-                [255, 128, 0],   # 3: Major Damage
-                [255, 0, 0]      # 4: Destroyed
-            ], dtype=np.uint8)
+            COLOR_PALETTE = np.array(
+                [
+                    [0, 0, 0],  # 0: Background
+                    [0, 255, 0],  # 1: No Damage
+                    [255, 255, 0],  # 2: Minor Damage
+                    [255, 128, 0],  # 3: Major Damage
+                    [255, 0, 0],  # 4: Destroyed
+                ],
+                dtype=np.uint8,
+            )
 
             color_mask = COLOR_PALETTE[pred_mask]
             overlay = post_img.copy()
-            building_pixels = (pred_mask > 0)
+            building_pixels = pred_mask > 0
 
             if building_pixels.any():
-                overlay[building_pixels] = (0.6 * color_mask[building_pixels] + 0.4 * post_img[building_pixels]).astype(np.uint8)
+                overlay[building_pixels] = (
+                    0.6 * color_mask[building_pixels] + 0.4 * post_img[building_pixels]
+                ).astype(np.uint8)
 
-            st.image(overlay, caption="AI Semantic Segmentation Overlay", use_column_width=True)
+            st.image(
+                overlay,
+                caption="AI Semantic Segmentation Overlay",
+                use_column_width=True,
+            )
