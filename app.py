@@ -224,7 +224,7 @@ def load_model(weights_path, _mtime, _size):
 # 5. STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="AI Disaster Assessment", layout="wide")
-st.title("🛰️ AI Satellite Disaster Damage Assessment")
+st.title("🛰️ AI Satellite Disaster Damage Assessment v1.0")
 
 if not os.path.exists(WEIGHTS_PATH):
     st.error(f"Weights file not found: {WEIGHTS_PATH}")
