@@ -1,0 +1,26 @@
+name: Deploy Streamlit App to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: 15.206.174.67
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ubuntu/Disaster_ai
+            git pull origin main
+            /home/ubuntu/venv/bin/pip install -r requirements.txt
+            sudo systemctl restart disaster_ai
