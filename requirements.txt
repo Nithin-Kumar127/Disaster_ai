@@ -1,6 +1,8 @@
+streamlit
 torch
 torchvision
-streamlit
 opencv-python-headless
 numpy
-matplotlib
+Pillow
+boto3
+groq

@@ -1,5 +1,6 @@
 import os
 import io
+import base64
 
 import streamlit as st
 import torch
@@ -11,12 +12,17 @@ import numpy as np
 from PIL import Image, ImageOps
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+from groq import Groq
 
 # ============================================================
-# 1. S3 BUCKET CONFIGURATION
+# 0. S3 CLOUD BACKUP HELPER & GROQ CONFIG
 # ============================================================
 S3_BUCKET = "disaster-ai-storage-nithin"
 S3_REGION = "ap-south-1"
+
+# Fetch Groq API Key safely from Environment Variables or Streamlit secrets
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", st.secrets.get("GROQ_API_KEY", ""))
+VISION_MODEL = "qwen/qwen3.8-27b"
 
 def upload_to_s3(file_bytes, filename):
     """Uploads uploaded image bytes directly to AWS S3 bucket."""
@@ -28,8 +34,64 @@ def upload_to_s3(file_bytes, filename):
         st.sidebar.warning(f"S3 Backup Warning: {e}")
         return False
 
+
+def encode_image_for_api(img_rgb, max_dim=640, quality=70):
+    """Resizes and encodes RGB array to base64 JPEG for Groq Vision API."""
+    h, w = img_rgb.shape[:2]
+    scale = max_dim / max(h, w)
+    if scale < 1:
+        img_rgb = cv2.resize(img_rgb, (int(w * scale), int(h * scale)))
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    _, buf = cv2.imencode(".jpg", img_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return base64.b64encode(buf).decode("utf-8")
+
+
+def generate_rescue_briefing(overlay_img_rgb, pred_mask, class_names, groq_api_key, scene_id="scene"):
+    """Calls Groq Vision API (qwen/qwen3.8-27b) to generate a 4-part Rescue Briefing."""
+    if not groq_api_key:
+        return "⚠️ GROQ_API_KEY missing. Please set your API key in environment variables or Streamlit secrets."
+
+    client = Groq(api_key=groq_api_key)
+    
+    # Class stats string
+    unique, counts = np.unique(pred_mask, return_counts=True)
+    total = pred_mask.size
+    stats_parts = [f"{class_names[u]}: {100*c/total:.1f}%" for u, c in zip(unique, counts) if 100*c/total > 0.05]
+    stats_str = ", ".join(stats_parts)
+
+    overlay_b64 = encode_image_for_api(overlay_img_rgb)
+
+    prompt = (
+        f"Post-disaster satellite scene '{scene_id}'. Overlay colors: green=no damage, "
+        f"yellow=minor, orange=major, red=destroyed. Model pixel stats: {stats_str}.\n\n"
+        "Give a rescue-ops briefing as plain text with exactly these four labeled sections, "
+        "each on its own line, no markdown formatting, no asterisks:\n\n"
+        "ROADS: <one or two sentences>\n"
+        "INFRASTRUCTURE: <one or two sentences>\n"
+        "ACCESS: <one or two sentences>\n"
+        "ACTIONS: <numbered list of 3 short action items, each on its own line>\n\n"
+        "Be concise but always finish every sentence completely."
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{overlay_b64}"}},
+                ],
+            }],
+            temperature=0.2,
+            max_tokens=700,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"❌ Groq API Call Failed: {str(e)}"
+
 # ============================================================
-# 2. MODEL ARCHITECTURE
+# 1. MODEL ARCHITECTURE  (identical to Colab - do not edit)
 # ============================================================
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -108,7 +170,7 @@ class SiameseUNet(nn.Module):
 
 
 # ============================================================
-# 3. INFERENCE HELPERS
+# 2. INFERENCE HELPERS (same logic as Colab)
 # ============================================================
 CLASS_NAMES = ["No damage", "Minor damage", "Major damage", "Destroyed", "Background / no building"]
 CLASS_COLORS = {
@@ -178,9 +240,10 @@ def overlay_from_mask(pred_mask, post_img_rgb, alpha=0.4):
 
 
 def load_uploaded_rgb(uploaded_file):
-    img_bytes = uploaded_file.getvalue()
-    upload_to_s3(img_bytes, uploaded_file.name)
-    img = Image.open(io.BytesIO(img_bytes))
+    """Decode an upload to a clean 8-bit RGB array (handles EXIF rotation, alpha, palette, 16-bit)."""
+    raw_bytes = uploaded_file.getvalue()
+    upload_to_s3(raw_bytes, uploaded_file.name)
+    img = Image.open(io.BytesIO(raw_bytes))
     img = ImageOps.exif_transpose(img)
     if img.mode in ("I;16", "I"):
         arr = np.array(img).astype(np.float32)
@@ -198,7 +261,7 @@ def class_distribution(mask):
 
 
 # ============================================================
-# 4. MODEL LOADING
+# 3. MODEL LOADING
 # ============================================================
 @st.cache_resource
 def load_model(weights_path, _mtime, _size):
@@ -221,9 +284,9 @@ def load_model(weights_path, _mtime, _size):
 
 
 # ============================================================
-# 5. STREAMLIT UI
+# 4. STREAMLIT UI
 # ============================================================
-st.set_page_config(page_title="AI Disaster Assessment", layout="wide")
+st.set_page_config(page_title="AI Disaster Assessment v1.0", layout="wide")
 st.title("🛰️ AI Satellite Disaster Damage Assessment v1.0")
 
 if not os.path.exists(WEIGHTS_PATH):
@@ -237,6 +300,12 @@ with st.sidebar:
     st.header("Settings")
     alpha = st.slider("Overlay opacity", 0.1, 0.9, 0.4, 0.05)
     show_diag = st.checkbox("Show diagnostics", value=True)
+    
+    # Allow passing Groq Key dynamically in Sidebar if not in env
+    groq_key_input = st.text_input("Groq API Key", value=GROQ_API_KEY, type="password")
+    if groq_key_input:
+        GROQ_API_KEY = groq_key_input
+
     st.markdown("**Legend**")
     for i, name in enumerate(CLASS_NAMES[:4]):
         r, g, b = CLASS_COLORS[i]
@@ -247,6 +316,11 @@ with st.sidebar:
         )
     st.caption("Pixels with no detected building are left untouched.")
     st.caption(f"📦 Cloud Storage Active: `s3://{S3_BUCKET}`")
+    if show_diag:
+        st.markdown("**Loaded weights**")
+        st.caption(f"{os.path.basename(WEIGHTS_PATH)} - {st_info.st_size / 1e6:.1f} MB")
+        if ckpt_meta:
+            st.caption(f"epoch={ckpt_meta.get('epoch')}  macro_f1={ckpt_meta.get('macro_f1')}")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -282,9 +356,16 @@ if pre_file and post_file:
         o2.image(mask_rgb, caption="Raw predicted class map (black = background)", use_container_width=True)
 
         dist = class_distribution(pred_mask)
-        st.subheader("Predicted class distribution")
+        st.subheader("Predicted Class Distribution")
         st.table({
             "Class": [d[0] for d in dist],
             "Pixels": [d[1] for d in dist],
             "% of image": [f"{d[2]:.2f}%" for d in dist],
         })
+
+        # --- RECOVERY / RESCUE BRIEFING VIA GROQ VISION ---
+        st.markdown("---")
+        st.subheader("🚨 AI Rescue-Ops Briefing")
+        with st.spinner("Analyzing scene with Groq Vision Model..."):
+            briefing = generate_rescue_briefing(overlay, pred_mask, CLASS_NAMES, GROQ_API_KEY)
+            st.text_area("Rescue Protocol Briefing", value=briefing, height=220)
